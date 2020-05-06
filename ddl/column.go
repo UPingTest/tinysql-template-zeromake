@@ -206,6 +206,17 @@ func onAddColumn(d *ddlCtx, t *meta.Meta, job *model.Job) (ver int64, err error)
 	return ver, errors.Trace(err)
 }
 
+func checkDropColumnForStatePublic(tblInfo *model.TableInfo, colInfo *model.ColumnInfo) (err error) {
+	adjustColumnInfoInDropColumn(tblInfo, colInfo.Offset)
+	if colInfo.OriginDefaultValue == nil && mysql.HasNotNullFlag(colInfo.Flag) {
+		colInfo.OriginDefaultValue, err = generateOriginDefaultValue(colInfo)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func onDropColumn(t *meta.Meta, job *model.Job) (ver int64, _ error) {
 	tblInfo, colInfo, err := checkDropColumn(t, job)
 	if err != nil {
@@ -213,19 +224,25 @@ func onDropColumn(t *meta.Meta, job *model.Job) (ver int64, _ error) {
 	}
 
 	originalState := colInfo.State
-	// TODO: fill the codes of the case `StatePublic`, `StateWriteOnly` and `StateDeleteOnly`.
-	//       You'll need to find the right place where to put the function `adjustColumnInfoInDropColumn`.
-	//       Also you'll need to take a corner case about the default value.
-	//       (Think about how the not null property and default value will influence the `Drop Column` operation.
 	switch colInfo.State {
 	case model.StatePublic:
-		// To be filled
+		// public -> write only
+		job.SchemaState = model.StateWriteOnly
+		colInfo.State = model.StateWriteOnly
+		err = checkDropColumnForStatePublic(tblInfo, colInfo)
+		if err != nil {
+			return ver, errors.Trace(err)
+		}
 		ver, err = updateVersionAndTableInfoWithCheck(t, job, tblInfo, originalState != colInfo.State)
 	case model.StateWriteOnly:
-		// To be filled
+		// write only -> delete only
+		job.SchemaState = model.StateDeleteOnly
+		colInfo.State = model.StateDeleteOnly
 		ver, err = updateVersionAndTableInfo(t, job, tblInfo, originalState != colInfo.State)
 	case model.StateDeleteOnly:
-		// To be filled
+		// delete only -> reorganization
+		job.SchemaState = model.StateDeleteReorganization
+		colInfo.State = model.StateDeleteReorganization
 		ver, err = updateVersionAndTableInfo(t, job, tblInfo, originalState != colInfo.State)
 	case model.StateDeleteReorganization:
 		// reorganization -> absent
